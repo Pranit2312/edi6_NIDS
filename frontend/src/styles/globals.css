@@ -1,0 +1,129 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+* {
+  @apply transition-colors;
+}
+
+body {
+  @apply bg-dark-900 text-dark-100 font-sans overflow-x-hidden;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+/* Glassmorphism effect */
+.glass {
+  @apply backdrop-blur-xl bg-white/[0.03] border border-white/[0.1];
+}
+
+.glass-dark {
+  @apply backdrop-blur-xl bg-black/[0.4] border border-white/[0.1];
+}
+
+/* Neon glow effects */
+.glow-blue {
+  @apply shadow-glow;
+}
+
+.glow-purple {
+  @apply shadow-glow-purple;
+}
+
+.glow-pink {
+  @apply shadow-glow-pink;
+}
+
+/* Animated gradient background */
+.animated-gradient {
+  background: linear-gradient(
+    -45deg,
+    #1c2128,
+    #2d333b,
+    #1c2128,
+    #2d333b
+  );
+  background-size: 400% 400%;
+  animation: gradientShift 15s ease infinite;
+}
+
+@keyframes gradientShift {
+  0% {
+    background-position: 0% 50%;
+  }
+  50% {
+    background-position: 100% 50%;
+  }
+  100% {
+    background-position: 0% 50%;
+  }
+}
+
+/* Smooth scrollbar */
+::-webkit-scrollbar {
+  @apply w-2;
+}
+
+::-webkit-scrollbar-track {
+  @apply bg-dark-800;
+}
+
+::-webkit-scrollbar-thumb {
+  @apply bg-neon-blue rounded-full;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  @apply bg-neon-purple;
+}
+
+/* Custom input styling */
+input, textarea, select {
+  @apply bg-dark-800 border border-dark-700 text-dark-100 rounded-lg px-4 py-2 focus:outline-none focus:border-neon-blue focus:shadow-glow transition-all;
+}
+
+/* Button animations */
+.btn-primary {
+  @apply px-6 py-2 rounded-lg bg-gradient-to-r from-neon-blue to-neon-purple text-dark-900 font-semibold hover:shadow-glow transition-all duration-300 cursor-pointer;
+}
+
+.btn-secondary {
+  @apply px-6 py-2 rounded-lg border border-neon-blue text-neon-blue hover:shadow-glow transition-all duration-300 cursor-pointer;
+}
+
+/* Card animations */
+.card {
+  @apply glass rounded-xl p-6 hover:border-neon-blue/50 transition-all duration-300;
+}
+
+.card-animated {
+  @apply card hover:shadow-glow hover:scale-105;
+}
+
+/* Typing animation */
+@keyframes typing {
+  from {
+    width: 0;
+  }
+  to {
+    width: 100%;
+  }
+}
+
+.typing {
+  animation: typing 3.5s steps(40, end);
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+/* Blink cursor */
+@keyframes blink {
+  50% {
+    border-color: transparent;
+  }
+}
+
+.blink {
+  animation: blink 1s step-start infinite;
+}
