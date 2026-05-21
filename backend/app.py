@@ -10,10 +10,13 @@ import threading
 import queue
 import json
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from flask import Flask, request, jsonify, Response
 from flask_cors import CORS
 import time
+import signal
+import socket
+from functools import lru_cache
 
 # Configure logging
 logging.basicConfig(
@@ -23,7 +26,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Import detection components
-from utils.packet_capture import PacketSniffer, PacketProcessor
+from utils.packet_capture import PacketSniffer, PacketProcessor, rate_tracker
 from utils.predictor import HybridDetectionEngine, MLPredictor
 from utils.feature_extractor import FeatureExtractor
 from utils.stats_manager import stats_manager
@@ -91,6 +94,7 @@ def init_db():
             username TEXT UNIQUE NOT NULL,
             email TEXT UNIQUE NOT NULL,
             password TEXT NOT NULL,
+            role TEXT DEFAULT 'user',
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
@@ -206,55 +210,71 @@ def init_db():
 def packet_detection_callback(packet_data):
     """
     Called whenever packet processor processes a packet.
+    Enriches raw packet with computed rates before detection.
     """
 
     try:
+        # CRITICAL: Enrich packet with real-time rate data
+        # This computes packet_rate, byte_rate, syn_rate, flow_packets
+        # Without this, all rate-based rules see 0 and never trigger
+        enriched_packet = rate_tracker.record_packet(packet_data)
 
-        # Perform hybrid detection
-        detection_result = NIDS_STATE.detector.detect(packet_data)
+        # Perform hybrid detection on enriched packet
+        detection_result = NIDS_STATE.detector.detect(enriched_packet)
 
         # Update statistics
-        NIDS_STATE.stats['packets_captured'] += 1
+        is_attack = detection_result.get('is_attack', False)
+        stats_manager.update_packet(packet_data, is_attack)
+        
+        # Keep NIDS_STATE.stats in sync
+        NIDS_STATE.stats['packets_captured'] = stats_manager.total_packets
+        if is_attack:
+            NIDS_STATE.stats['attacks_detected'] = stats_manager.threats_detected
+            stats_manager.update_alert(detection_result.get('attack_type', 'Unknown'))
+            logger.warning(f"ATTACK DETECTED: {detection_result.get('attack_type')} from {packet_data.get('src_ip')} ({detection_result.get('confidence'):.1%})")
 
-        if detection_result.get('is_attack'):
-            NIDS_STATE.stats['attacks_detected'] += 1
-
-        NIDS_STATE.stats['last_update'] = datetime.utcnow().isoformat()
+        NIDS_STATE.stats['last_update'] = datetime.now(timezone.utc).isoformat()
 
         # Store packet in DB
         store_packet(packet_data, detection_result)
 
-        # Store recent packets in memory
-        NIDS_STATE.recent_packets.append({
-            'src_ip': packet_data.get('src_ip', ''),
-            'dst_ip': packet_data.get('dst_ip', ''),
-            'protocol': packet_data.get('protocol', ''),
-            'timestamp': packet_data.get('timestamp', ''),
-            'is_attack': detection_result.get('is_attack', False),
-            'confidence': detection_result.get('confidence', 0),
-        })
+        # Store recent packets in memory for real-time frontend
+        packet_info = {
+            'src_ip': packet_data.get('src_ip', '0.0.0.0'),
+            'dst_ip': packet_data.get('dst_ip', '0.0.0.0'),
+            'protocol': packet_data.get('protocol', 'OTHER'),
+            'timestamp': packet_data.get('timestamp', datetime.now(timezone.utc).isoformat()),
+            'packet_size': packet_data.get('packet_size', 0),
+            'is_attack': is_attack,
+            'threat_status': 'Attack' if is_attack else 'Safe',
+            'attack_type': detection_result.get('attack_type', 'Normal'),
+            'ml_confidence': round(detection_result.get('ml_confidence', 0) * 100, 2),
+            'detection_method': detection_result.get('detection_method', 'unknown')
+        }
+        
+        NIDS_STATE.recent_packets.append(packet_info)
 
         # Limit packet memory
         if len(NIDS_STATE.recent_packets) > app.config['MAX_PACKETS_MEMORY']:
             NIDS_STATE.recent_packets = NIDS_STATE.recent_packets[-app.config['MAX_PACKETS_MEMORY']:]
 
         # Add alerts
-        if detection_result.get('is_attack'):
-
+        if is_attack:
             alert = {
+                'id': len(NIDS_STATE.recent_alerts) + 1,
                 'type': detection_result.get('attack_type', 'Unknown'),
                 'severity': detection_result.get('severity', 'medium'),
                 'confidence': detection_result.get('confidence', 0),
                 'src_ip': packet_data.get('src_ip', ''),
+                'dst_ip': packet_data.get('dst_ip', ''),
                 'timestamp': packet_data.get('timestamp', ''),
+                'description': detection_result.get('reason', 'Suspicious activity detected')
             }
 
             NIDS_STATE.recent_alerts.append(alert)
 
             if len(NIDS_STATE.recent_alerts) > 100:
                 NIDS_STATE.recent_alerts = NIDS_STATE.recent_alerts[-100:]
-
-            logger.warning(f"ATTACK DETECTED: {alert}")
 
     except Exception as e:
         logger.error(f"Error in detection callback: {e}")
@@ -297,7 +317,7 @@ def store_packet(packet_data: dict, detection_result: dict):
 
             'Attack' if detection_result.get('is_attack') else 'Safe',
 
-            detection_result.get('ml_confidence', 0),
+            round(detection_result.get('ml_confidence', 0) * 100, 2),
             detection_result.get('attack_type', 'Normal'),
             detection_result.get('detection_method', 'unknown')
 
@@ -367,6 +387,9 @@ def start_detection_engine():
         model_dir='models'
     )
 
+    # Log detector status
+    logger.info(f"Detector initialized: ML Loaded={NIDS_STATE.detector.ml_predictor.loaded}")
+
     # Packet sniffer
     NIDS_STATE.sniffer = PacketSniffer(
         packet_queue=NIDS_STATE.packet_queue,
@@ -401,12 +424,35 @@ def stop_detection_engine():
         NIDS_STATE.sniffer.stop()
 
     NIDS_STATE.running = False
-
     logger.info("Detection engine stopped")
 
 
+def signal_handler(sig, frame):
+    """Handle termination signals"""
+    logger.info("Shutdown signal received...")
+    stop_detection_engine()
+    sys.exit(0)
+
+
+# Register signal handlers
+signal.signal(signal.SIGINT, signal_handler)
+signal.signal(signal.SIGTERM, signal_handler)
+
+
+@lru_cache(maxsize=1024)
+def resolve_hostname(ip):
+    """Resolve IP to hostname with caching"""
+    try:
+        # Don't resolve local/private IPs to save time
+        if ip.startswith(('192.168.', '10.', '127.', '172.')):
+            return None
+        return socket.gethostbyaddr(ip)[0]
+    except (socket.herror, socket.gaierror, socket.timeout):
+        return None
+
+
 # ============================================================
-# INJECT DETECTOR INTO ROUTES
+# API ROUTES
 # ============================================================
 
 @monitoring_bp.before_request
@@ -435,6 +481,53 @@ app.register_blueprint(settings_bp, url_prefix='/api')
 # API ROUTES
 # ============================================================
 
+@app.route('/api/interfaces', methods=['GET'])
+def get_interfaces():
+    """Get list of available network interfaces"""
+    try:
+        interfaces = PacketSniffer.get_interfaces()
+        return jsonify(interfaces), 200
+    except Exception as e:
+        logger.error(f"Error getting interfaces: {e}")
+        return jsonify([]), 500
+
+
+@app.route('/api/settings/interface', methods=['POST'])
+def set_interface():
+    """Set active network interface"""
+    try:
+        data = request.json
+        interface = data.get('interface')
+        
+        if not interface:
+            return jsonify({'error': 'No interface provided'}), 400
+            
+        logger.info(f"Changing interface to: {interface}")
+        
+        # Stop current engine
+        stop_detection_engine()
+        
+        # Start with new interface
+        NIDS_STATE.sniffer = PacketSniffer(
+            packet_queue=NIDS_STATE.packet_queue,
+            interface=interface if interface != 'auto' else None
+        )
+        NIDS_STATE.sniffer.start()
+        
+        NIDS_STATE.processor = PacketProcessor(
+            packet_queue=NIDS_STATE.packet_queue,
+            detection_callback=packet_detection_callback
+        )
+        NIDS_STATE.processor.start()
+        NIDS_STATE.running = True
+        
+        return jsonify({'message': f'Interface changed to {interface}'}), 200
+        
+    except Exception as e:
+        logger.error(f"Error setting interface: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
 @app.route('/api/health', methods=['GET'])
 def health():
 
@@ -444,7 +537,7 @@ def health():
         'engine': 'Hybrid ML + Rules',
         'packets_captured': NIDS_STATE.stats['packets_captured'],
         'attacks_detected': NIDS_STATE.stats['attacks_detected'],
-        'timestamp': datetime.utcnow().isoformat()
+        'timestamp': datetime.now(timezone.utc).isoformat()
     })
 
 

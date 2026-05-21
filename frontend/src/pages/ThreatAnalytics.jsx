@@ -33,12 +33,16 @@ export default function ThreatAnalytics({ onLogout }) {
       const distributionResponse = await fetch(`${API_BASE}/analytics/attack-distribution`)
       const distributionData = distributionResponse.ok ? await distributionResponse.json() : []
 
+      // Fetch confidence distribution
+      const confidenceResponse = await fetch(`${API_BASE}/analytics/confidence-distribution`)
+      const confidenceData = confidenceResponse.ok ? await confidenceResponse.json() : []
+
       // Transform and set data
       setAnalyticsData({
         attackTrends: trendsData.length > 0 ? trendsData : generateMockTrends(),
         topThreats: heatmapData.length > 0 ? heatmapData.slice(0, 5) : generateMockThreats(),
         detectionStats: statsData.length > 0 ? statsData : generateMockStats(),
-        confidenceData: distributionData.length > 0 ? distributionData : generateMockConfidence(),
+        confidenceData: confidenceData.length > 0 ? confidenceData : generateMockConfidence(),
       })
     } catch (error) {
       console.error('Error fetching analytics data:', error)
@@ -195,8 +199,8 @@ export default function ThreatAnalytics({ onLogout }) {
                     data={analyticsData.detectionStats}
                     cx="50%"
                     cy="50%"
-                    labelLine={false}
-                    label={(entry) => `${entry.category}: ${entry.value}%`}
+                    labelLine={true}
+                    label={({ name, percent, category }) => `${category || name}: ${(percent * 100).toFixed(0)}%`}
                     outerRadius={80}
                     fill="#8884d8"
                     dataKey="value"

@@ -10,7 +10,7 @@ import threading
 import queue
 import json
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from flask import Flask, request, jsonify, Response
 from flask_cors import CORS
 import time
@@ -171,11 +171,15 @@ def packet_detection_callback(packet_data):
         # Perform detection
         detection_result = NIDS_STATE.detector.detect(packet_data)
         
-        # Update statistics
+        # Update statistics in both NIDS_STATE and stats_manager
         NIDS_STATE.stats['packets_captured'] += 1
-        if detection_result.get('is_attack'):
+        is_attack = detection_result.get('is_attack', False)
+        if is_attack:
             NIDS_STATE.stats['attacks_detected'] += 1
-        NIDS_STATE.stats['last_update'] = datetime.utcnow().isoformat()
+        NIDS_STATE.stats['last_update'] = datetime.now(timezone.utc).isoformat()
+        
+        # CRITICAL: Update stats_manager so /api/stats endpoint shows real data
+        stats_manager.update_packet(packet_data, is_attack=is_attack)
         
         # Store packet in database
         store_packet(packet_data, detection_result)
@@ -355,7 +359,7 @@ def health():
         'engine': 'Hybrid ML+Rules',
         'packets_captured': NIDS_STATE.stats['packets_captured'],
         'attacks_detected': NIDS_STATE.stats['attacks_detected'],
-        'timestamp': datetime.utcnow().isoformat()
+        'timestamp': datetime.now(timezone.utc).isoformat()
     })
 
 
@@ -370,7 +374,7 @@ def realtime_stats():
         ),
         'running': NIDS_STATE.running,
         'detector_stats': NIDS_STATE.detector.get_stats() if NIDS_STATE.detector else {},
-        'timestamp': datetime.utcnow().isoformat()
+        'timestamp': datetime.now(timezone.utc).isoformat()
     })
 
 

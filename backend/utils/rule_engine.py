@@ -4,7 +4,7 @@ Hybrid IDS with rule-based fallback for low ML confidence
 """
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, List, Tuple
 import ipaddress
 
@@ -77,16 +77,77 @@ class RuleBasedDetector:
             9090: 'SOCKS5',
         }
     
+    def _detect_port_scan(self, dst_port: int, packet_size: int,
+                      packet_rate: float, tcp_flags: str) -> Tuple[bool, str]:
+        """Detect potential port scanning"""
+        # Ignore normal web traffic ports for scan detection
+        safe_ports = [80, 443, 53, 8080]
+
+        if dst_port in safe_ports:
+            return False, ''
+
+        # Detect high-rate port scans (e.g. Nmap)
+        if (
+            tcp_flags
+            and ('S' in tcp_flags or 'F' in tcp_flags or 'N' in tcp_flags)
+            and packet_size < 100
+            and packet_rate > 20
+        ):
+            return True, f"Scan attempt on port {dst_port} (Flags: {tcp_flags})"
+
+        return False, ''
+    
+    def _detect_ddos(self, packet_rate: float, byte_rate: float, 
+                     packet_size: int) -> Tuple[bool, str]:
+        """Detect DDoS attack patterns"""
+        # High packet rate with consistent sizes
+        if packet_rate > 500:  # packets per second
+            return True, f"Excessive packet rate: {packet_rate:.0f} pps"
+        
+        # Byte rate exceeding normal thresholds
+        if byte_rate > 10_000_000:  # 10 Mbps
+            return True, f"Excessive byte rate: {byte_rate/1_000_000:.1f} Mbps"
+        
+        return False, ''
+    
+    def _detect_syn_flood(self, tcp_flags: str, packet_rate: float, 
+                         packet_size: int, syn_rate: float = 0,
+                         syn_count: int = 0) -> Tuple[bool, str]:
+        """Detect SYN flood attacks using multiple indicators"""
+        # Method 1: High SYN-only rate from rate tracker
+        if syn_rate > 10:
+            return True, f"SYN Flood detected (SYN rate: {syn_rate:.0f} SYN/s, {syn_count} SYNs in window)"
+        
+        # Method 2: Classic detection - SYN-only flag with high packet rate
+        if (
+            tcp_flags == 'S'
+            and packet_rate > 50
+            and packet_size < 120
+        ):
+            return True, f"Potential SYN Flood (Rate: {packet_rate:.0f} pps)"
+        
+        # Method 3: Many SYN packets accumulated in the window
+        if syn_count > 30 and tcp_flags == 'S':
+            return True, f"SYN Flood burst detected ({syn_count} SYN packets in window)"
+        
+        return False, ''
+
+    def _detect_brute_force(self, dst_port: int, packet_rate: float,
+                           tcp_flags: str) -> Tuple[bool, str]:
+        """Detect potential brute force attempts"""
+        # Common brute force ports: SSH (22), RDP (3389), SMB (445)
+        brute_ports = [22, 3389, 445, 23, 21]
+        
+        if dst_port in brute_ports and packet_rate > 5:
+            if 'P' in tcp_flags or 'PA' in tcp_flags: # Push flag often seen in auth attempts
+                return True, f"Brute force attempt on port {dst_port}"
+        
+        return False, ''
+
     def detect(self, packet_data: Dict, ml_result: Dict = None) -> DetectionResult:
         """
         Perform rule-based detection.
-        
-        Args:
-            packet_data: Packet information
-            ml_result: ML model prediction result (optional)
-            
-        Returns:
-            DetectionResult object
+        Rules can OVERRIDE ML when clear attack signatures are found.
         """
         rules_triggered = []
         attack_type = 'Unknown'
@@ -104,156 +165,122 @@ class RuleBasedDetector:
         packet_rate = packet_data.get('packet_rate', 0)
         byte_rate = packet_data.get('byte_rate', 0)
         tcp_flags = packet_data.get('tcp_flags', '')
+        syn_rate = packet_data.get('syn_rate', 0)
+        syn_count = packet_data.get('syn_count', 0)
         
         # Rule 1: Port Scanning Detection
         scan_result = self._detect_port_scan(
             dst_port, packet_size, packet_rate, tcp_flags
         )
         if scan_result[0]:
-            rules_triggered.append(f"Port Scan: {scan_result[1]}")
+            rules_triggered.append(scan_result[1])
             attack_type = 'Port Scan'
-            base_confidence += 0.3
-            if max_severity in ['low']:
-                max_severity = 'medium'
+            base_confidence = max(base_confidence, 0.6)
+            max_severity = 'medium'
         
         # Rule 2: DDoS Detection
         ddos_result = self._detect_ddos(packet_rate, byte_rate, packet_size)
         if ddos_result[0]:
-            rules_triggered.append(f"DDoS Attack: {ddos_result[1]}")
+            rules_triggered.append(ddos_result[1])
             attack_type = 'DDoS'
-            base_confidence += 0.4
+            base_confidence = max(base_confidence, 0.9)
             max_severity = 'critical'
         
-        # Rule 3: SYN Flood Detection
-        syn_result = self._detect_syn_flood(tcp_flags, packet_rate, packet_size)
+        # Rule 3: SYN Flood Detection (enhanced with syn_rate)
+        syn_result = self._detect_syn_flood(
+            tcp_flags, packet_rate, packet_size,
+            syn_rate=syn_rate, syn_count=syn_count
+        )
         if syn_result[0]:
-            rules_triggered.append(f"SYN Flood: {syn_result[1]}")
+            rules_triggered.append(syn_result[1])
             attack_type = 'SYN Flood'
-            base_confidence += 0.35
+            base_confidence = max(base_confidence, 0.92)
             max_severity = 'critical'
+
+        # Rule 4: Brute Force Detection
+        brute_result = self._detect_brute_force(dst_port, packet_rate, tcp_flags)
+        if brute_result[0]:
+            rules_triggered.append(brute_result[1])
+            attack_type = 'Brute Force'
+            base_confidence = max(base_confidence, 0.7)
+            max_severity = 'high'
         
-        # Rule 4: ICMP Flood Detection
+        # Rule 5: ICMP Flood Detection
         icmp_result = self._detect_icmp_flood(protocol, packet_rate, packet_size)
         if icmp_result[0]:
-            rules_triggered.append(f"ICMP Flood: {icmp_result[1]}")
+            rules_triggered.append(icmp_result[1])
             attack_type = 'ICMP Flood'
-            base_confidence += 0.35
-            max_severity = 'critical'
+            base_confidence = max(base_confidence, 0.8)
+            max_severity = 'high'
+
+        # Rule 6: High connection rate from single IP
+        connection_count = packet_data.get('connection_count', 0)
+        if connection_count > 100 and packet_rate > 30:
+            if not rules_triggered:  # Only add if no other rule matched
+                rules_triggered.append(
+                    f"High connection rate from {src_ip}: {connection_count} connections, {packet_rate:.0f} pps"
+                )
+                attack_type = 'Flooding'
+                base_confidence = max(base_confidence, 0.75)
+                max_severity = 'high'
         
-        # Rule 5: Suspicious Port Access
-        suspicious_result = self._detect_suspicious_port(
-            dst_port, src_ip, dst_ip
-        )
-        if suspicious_result[0]:
-            rules_triggered.append(f"Suspicious Port: {suspicious_result[1]}")
-            if attack_type == 'Unknown':
-                attack_type = suspicious_result[2]
-            base_confidence += 0.2
-            if max_severity in ['low']:
-                max_severity = 'medium'
-        
-        # Rule 6: Large Packet Anomaly
-        large_pkt_result = self._detect_large_packets(packet_size, protocol)
-        if large_pkt_result[0]:
-            rules_triggered.append(f"Large Packet: {large_pkt_result[1]}")
-            base_confidence += 0.15
-        
-        # Rule 7: Unusual Traffic Pattern
-        traffic_result = self._detect_unusual_traffic(
-            packet_rate, byte_rate, packet_size
-        )
-        if traffic_result[0]:
-            rules_triggered.append(f"Unusual Traffic: {traffic_result[1]}")
-            base_confidence += 0.2
-        
-        # Determine final decision
+        # ===== HYBRID DECISION LOGIC =====
+        # KEY FIX: Rules OVERRIDE ML when they detect clear attack patterns
         is_attack = False
         final_confidence = min(base_confidence, 1.0)
+        rules_found_attack = len(rules_triggered) > 0
         
-        # Use ML result if available
-        if ml_result:
+        if rules_found_attack and base_confidence >= 0.7:
+            # RULES DETECTED A CLEAR ATTACK - always trust rules for these patterns
+            is_attack = True
+            reason = f"Rule-based detection: {', '.join(rules_triggered)}"
+            final_confidence = base_confidence
+            # If ML also detected an attack, combine confidence
+            if ml_result and ml_result.get('is_attack', False):
+                ml_attack_type = ml_result.get('attack_type', '')
+                if ml_attack_type and ml_attack_type != 'Benign':
+                    attack_type = ml_attack_type  # Use ML's more specific label
+                final_confidence = max(base_confidence, ml_result.get('confidence', 0))
+                reason = f"Hybrid detection (ML + Rules): {', '.join(rules_triggered)}"
+        elif ml_result:
             ml_confidence = ml_result.get('confidence', 0.0)
             ml_is_attack = ml_result.get('is_attack', False)
             
-            # If ML confidence is high, use ML result
-            if ml_confidence >= self.ml_confidence_threshold:
-                is_attack = ml_is_attack
+            if ml_is_attack:
+                # ML detected an attack
+                is_attack = True
+                attack_type = ml_result.get('attack_type', attack_type)
                 final_confidence = ml_confidence
-                
-                if ml_is_attack:
-                    attack_type = ml_result.get('attack_type', 'Unknown')
-                    reason = f"ML Detection ({final_confidence:.2%}) - {attack_type}"
-                    if max_severity == 'low':
-                        max_severity = 'high'
-                else:
-                    reason = f"Benign (ML confidence: {final_confidence:.2%})"
+                reason = f"ML Detection: {attack_type} ({ml_confidence:.1%})"
+            elif rules_found_attack:
+                # ML says benign but rules found something - trust rules
+                is_attack = True
+                reason = f"Rule-based detection (ML override): {', '.join(rules_triggered)}"
+                final_confidence = base_confidence
             else:
-                # ML confidence is low, use rule-based result
-                is_attack = len(rules_triggered) > 0 and final_confidence > 0.3
-                reason = f"Rule-based detection (Rules: {len(rules_triggered)})"
+                # Both ML and rules say benign
+                is_attack = False
+                reason = "Benign traffic"
+                attack_type = 'Benign'
+                final_confidence = ml_confidence
         else:
-            # No ML result, use pure rule-based detection
-            is_attack = len(rules_triggered) > 0 and final_confidence > 0.3
-            reason = f"Rule-based detection (Rules: {len(rules_triggered)})"
-            if not is_attack and attack_type == 'Unknown':
+            # No ML result - pure rule-based
+            is_attack = rules_found_attack
+            if is_attack:
+                reason = f"Rule-based detection: {', '.join(rules_triggered)}"
+            else:
+                reason = "Normal traffic"
                 attack_type = 'Benign'
         
-        result = DetectionResult(
+        return DetectionResult(
             is_attack=is_attack,
             attack_type=attack_type,
-            severity=max_severity,
+            severity=max_severity if is_attack else 'low',
             confidence=final_confidence,
             reason=reason,
             rules_triggered=rules_triggered,
-            timestamp=datetime.utcnow().isoformat()
+            timestamp=datetime.now(timezone.utc).isoformat()
         )
-        
-        return result
-    
-    def _detect_port_scan(self, dst_port: int, packet_size: int,
-                      packet_rate: float, tcp_flags: str) -> Tuple[bool, str]:
-        """Detect potential port scanning"""
-
-        # Ignore normal traffic
-        safe_ports = [80, 443, 53, 8080]
-
-        if dst_port in safe_ports:
-            return False, ''
-
-        # Realistic port scan conditions
-        if (
-            tcp_flags
-            and 'S' in tcp_flags
-            and 'A' not in tcp_flags
-            and packet_size < 60
-            and packet_rate > 200
-        ):
-            return True, f"High-rate SYN scan on port {dst_port}"
-
-        return False, ''
-    
-    def _detect_ddos(self, packet_rate: float, byte_rate: float, 
-                     packet_size: int) -> Tuple[bool, str]:
-        """Detect DDoS attack patterns"""
-        # High packet rate with consistent sizes
-        if packet_rate > 1000:  # packets per second
-            return True, f"Excessive packet rate: {packet_rate:.0f} pps"
-        
-        # Byte rate exceeding normal thresholds
-        if byte_rate > 10_000_000:  # 10 Mbps
-            return True, f"Excessive byte rate: {byte_rate/1_000_000:.1f} Mbps"
-        
-        return False, ''
-    
-    def _detect_syn_flood(self, tcp_flags: str, packet_rate: float, 
-                          packet_size: int) -> Tuple[bool, str]:
-        """Detect SYN flood attack"""
-        # Many SYN packets with no DATA
-        if tcp_flags and 'S' in tcp_flags and 'A' not in tcp_flags:
-            if packet_rate > 500:
-                return True, f"SYN flood: {packet_rate:.0f} SYN packets/sec"
-        
-        return False, ''
     
     def _detect_icmp_flood(self, protocol: str, packet_rate: float, 
                            packet_size: int) -> Tuple[bool, str]:

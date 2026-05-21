@@ -13,7 +13,7 @@ warnings.filterwarnings('ignore')
 
 class DatasetPreprocessor:
     """Professional dataset preprocessing for CICIDS2017"""
-    
+
     def __init__(self, data_dir='data'):
         self.data_dir = data_dir
         self.df = None

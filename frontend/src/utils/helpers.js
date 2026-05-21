@@ -71,11 +71,11 @@ export const generateMockPackets = (count = 50) => {
 
 export const generateMockStats = () => {
   return {
-    totalPackets: 156234,
-    threatsDetected: 234,
-    safeTraffic: 98.5,
-    activeConnections: 45,
-    cpuUsage: 42,
-    memoryUsage: 58,
+    totalPackets: 0,
+    threatsDetected: 0,
+    safeTraffic: 100,
+    activeConnections: 0,
+    cpuUsage: 0,
+    memoryUsage: 0,
   }
 }

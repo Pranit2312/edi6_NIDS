@@ -24,8 +24,16 @@ export default function Dashboard({ onLogout }) {
     
     initializeData()
 
-    const interval = setInterval(fetchRealData, 3000)
-    return () => clearInterval(interval)
+    const statsInterval = setInterval(fetchRealData, 3000)
+    const chartsInterval = setInterval(() => {
+      generateChartData()
+      generateAttackData()
+    }, 10000)
+
+    return () => {
+      clearInterval(statsInterval)
+      clearInterval(chartsInterval)
+    }
   }, [])
 
   const fetchRealData = async () => {
@@ -42,7 +50,9 @@ export default function Dashboard({ onLogout }) {
         safeTraffic: statsData.safeTraffic || 0,
         activeConnections: statsData.activeConnections || 0,
         cpuUsage: statsData.cpuUsage || 0,
-        memoryUsage: statsData.memoryUsage || 0
+        memoryUsage: statsData.memoryUsage || 0,
+        pps: statsData.packetsPerSecond || 0,
+        apps: statsData.attackPacketsPerSecond || 0
       })
 
       // Fetch real alerts/threats from backend
@@ -172,7 +182,7 @@ export default function Dashboard({ onLogout }) {
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ staggerChildren: 0.1 }}
-          className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mb-8"
+          className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8"
         >
           <StatCard
             title="Total Packets"
@@ -196,6 +206,20 @@ export default function Dashboard({ onLogout }) {
             color="green"
           />
           <StatCard
+            title="Packets / Sec"
+            value={stats.pps}
+            icon={Wifi}
+            color="purple"
+          />
+        </motion.div>
+
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ staggerChildren: 0.1 }}
+          className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8"
+        >
+          <StatCard
             title="Active Connections"
             value={stats.activeConnections}
             icon={Wifi}
@@ -212,6 +236,12 @@ export default function Dashboard({ onLogout }) {
             value={`${stats.memoryUsage}%`}
             icon={HardDrive}
             color="purple"
+          />
+          <StatCard
+            title="Attack PPS"
+            value={stats.apps}
+            icon={AlertTriangle}
+            color="pink"
           />
         </motion.div>
 

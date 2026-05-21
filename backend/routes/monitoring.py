@@ -3,6 +3,7 @@ import sqlite3
 from datetime import datetime, timedelta
 import psutil
 import os
+from utils.stats_manager import stats_manager
 
 monitoring_bp = Blueprint('monitoring', __name__)
 
@@ -11,42 +12,9 @@ DATABASE = 'nids.db'
 
 @monitoring_bp.route('/stats', methods=['GET'])
 def get_stats():
-    """Get real-time monitoring statistics from NIDS_STATE"""
+    """Get real-time monitoring statistics"""
     try:
-        # Get live stats from NIDS_STATE (injected by app.py)
-        total_packets = g.stats.get('packets_captured', 0)
-        total_attacks = g.stats.get('attacks_detected', 0)
-        
-        # Calculate safe traffic percentage
-        safe_traffic = 100.0
-        if total_packets > 0:
-            safe_traffic = (1 - (total_attacks / total_packets)) * 100
-        
-        # Get system metrics
-        try:
-            cpu_usage = psutil.cpu_percent(interval=0.1)
-            memory = psutil.virtual_memory()
-            memory_usage = memory.percent
-        except:
-            cpu_usage = 0
-            memory_usage = 0
-        
-        # Count active connections from recent packets
-        active_connections = len(set(
-            (p['src_ip'], p['dst_ip']) for p in g.recent_packets 
-            if isinstance(p, dict) and 'src_ip' in p
-        ))
-        
-        return jsonify({
-            'totalPackets': total_packets,
-            'threatsDetected': total_attacks,
-            'safeTraffic': round(safe_traffic, 1),
-            'activeConnections': active_connections,
-            'cpuUsage': round(cpu_usage, 1),
-            'memoryUsage': round(memory_usage, 1),
-            'engineRunning': True,
-            'lastUpdate': g.stats.get('last_update'),
-        }), 200
+        return jsonify(stats_manager.get_stats()), 200
     
     except Exception as e:
         return jsonify({'error': str(e)}), 500

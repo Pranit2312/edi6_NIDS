@@ -31,6 +31,7 @@ export default function LiveMonitoring({ onLogout }) {
             id: p.id || idx,
             sourceIP: p.src_ip || '0.0.0.0',
             destIP: p.dst_ip || '0.0.0.0',
+            hostname: p.hostname || null,
             protocol: (p.protocol || 'OTHER').toUpperCase(),
             size: p.packet_size || 0,
             timestamp: p.timestamp || new Date().toISOString(),
@@ -209,8 +210,8 @@ export default function LiveMonitoring({ onLogout }) {
           {/* Stats */}
           <div className="mt-4 flex gap-4 text-sm">
             <span className="text-dark-400">Total: <span className="text-neon-blue">{filteredPackets.length}</span></span>
-            <span className="text-dark-400">Threats: <span className="text-neon-pink">{filteredPackets.filter(p => p.threatStatus === 'Threat').length}</span></span>
-            <span className="text-dark-400">Safe: <span className="text-neon-green">{filteredPackets.filter(p => p.threatStatus === 'Safe').length}</span></span>
+            <span className="text-dark-400">Threats: <span className="text-neon-pink">{filteredPackets.filter(p => p.threatStatus.toLowerCase() === 'threat').length}</span></span>
+            <span className="text-dark-400">Safe: <span className="text-neon-green">{filteredPackets.filter(p => p.threatStatus.toLowerCase() === 'safe').length}</span></span>
           </div>
         </motion.div>
 
@@ -246,7 +247,16 @@ export default function LiveMonitoring({ onLogout }) {
                       className="border-b border-white/5 hover:bg-white/5 transition-colors"
                     >
                       <td className="px-6 py-4 text-sm text-dark-300">{packet.sourceIP}</td>
-                      <td className="px-6 py-4 text-sm text-dark-300">{packet.destIP}</td>
+                      <td className="px-6 py-4 text-sm text-dark-300">
+                        <div className="flex flex-col">
+                          <span>{packet.destIP}</span>
+                          {packet.hostname && (
+                            <span className="text-xs text-neon-blue truncate max-w-[150px]" title={packet.hostname}>
+                              {packet.hostname}
+                            </span>
+                          )}
+                        </div>
+                      </td>
                       <td className="px-6 py-4 text-sm"><span className="px-2 py-1 rounded bg-neon-blue/20 text-neon-blue text-xs">{packet.protocol}</span></td>
                       <td className="px-6 py-4 text-sm text-dark-300">{formatBytes(packet.size)}</td>
                       <td className="px-6 py-4 text-sm text-dark-300">{new Date(packet.timestamp).toLocaleTimeString()}</td>

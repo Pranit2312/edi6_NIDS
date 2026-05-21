@@ -1,8 +1,10 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import Navbar from '../components/Navbar'
-import { Settings, Bell, Shield, Zap, Save } from 'lucide-react'
+import { Settings, Bell, Shield, Zap, Save, Wifi } from 'lucide-react'
 import { motion } from 'framer-motion'
 import { toast } from 'sonner'
+
+const API_BASE = 'http://localhost:8081/api'
 
 export default function SettingsPage({ onLogout }) {
   const [isMonitoring, setIsMonitoring] = useState(true)
@@ -16,6 +18,42 @@ export default function SettingsPage({ onLogout }) {
   })
   const [autoResponse, setAutoResponse] = useState(true)
   const [blockThreshold, setBlockThreshold] = useState(75)
+  const [interfaces, setInterfaces] = useState([])
+  const [selectedInterface, setSelectedInterface] = useState('auto')
+
+  useEffect(() => {
+    fetchInterfaces()
+  }, [])
+
+  const fetchInterfaces = async () => {
+    try {
+      const response = await fetch(`${API_BASE}/interfaces`)
+      if (response.ok) {
+        const data = await response.json()
+        setInterfaces(data)
+      }
+    } catch (error) {
+      console.error('Error fetching interfaces:', error)
+    }
+  }
+
+  const handleInterfaceChange = async (iface) => {
+    setSelectedInterface(iface)
+    try {
+      const response = await fetch(`${API_BASE}/settings/interface`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ interface: iface })
+      })
+      if (response.ok) {
+        toast.success(`Interface changed to ${iface === 'auto' ? 'Auto-detect' : iface}`)
+      } else {
+        toast.error('Failed to change interface')
+      }
+    } catch (error) {
+      toast.error('Error connecting to backend')
+    }
+  }
 
   const handleSave = () => {
     toast.success('Settings saved successfully!')
@@ -75,6 +113,39 @@ export default function SettingsPage({ onLogout }) {
               >
                 {isMonitoring ? '🔴 Monitoring' : '⚫ Paused'}
               </button>
+            </div>
+          </motion.div>
+
+          {/* Network Interface */}
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.15 }}
+            className="glass rounded-xl p-6 border border-white/5"
+          >
+            <div className="flex items-center gap-3 mb-6">
+              <Wifi size={24} className="text-neon-blue" />
+              <h2 className="text-xl font-semibold">Network Interface</h2>
+            </div>
+            <div className="space-y-4">
+              <div>
+                <p className="text-dark-400 text-sm mb-4">Select the interface to monitor</p>
+                <select 
+                  value={selectedInterface}
+                  onChange={(e) => handleInterfaceChange(e.target.value)}
+                  className="w-full bg-dark-800 border border-dark-700 rounded-lg px-4 py-2 focus:outline-none focus:border-neon-blue text-dark-200"
+                >
+                  <option value="auto">Auto-detect Active Interface</option>
+                  {interfaces.map(iface => (
+                    <option key={iface.name} value={iface.name}>
+                      {iface.description || iface.name}
+                    </option>
+                  ))}
+                </select>
+                <p className="text-xs text-dark-500 mt-2 italic">
+                  * Changing interface will restart the detection engine.
+                </p>
+              </div>
             </div>
           </motion.div>
 

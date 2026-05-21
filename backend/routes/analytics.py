@@ -1,6 +1,6 @@
 from flask import Blueprint, request, jsonify, g
 import sqlite3
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from collections import defaultdict
 
 analytics_bp = Blueprint('analytics', __name__)
@@ -60,7 +60,10 @@ def get_traffic_trends():
         cursor.execute(f'''
             SELECT strftime('%Y-%m-%d %H', timestamp) as hour, 
                    COUNT(*) as total_packets,
-                   SUM(CASE WHEN threat_status = 'Attack' THEN 1 ELSE 0 END) as attacks
+                   SUM(CASE WHEN attack_type IN ('DoS', 'ddos', 'syn flood') THEN 1 ELSE 0 END) as dos,
+                   SUM(CASE WHEN attack_type IN ('Port Scan', 'portscan') THEN 1 ELSE 0 END) as portScan,
+                   SUM(CASE WHEN attack_type IN ('Brute Force', 'bruteforce') THEN 1 ELSE 0 END) as bruteForce,
+                   SUM(CASE WHEN threat_status = 'Attack' AND attack_type NOT IN ('DoS', 'ddos', 'syn flood', 'Port Scan', 'portscan', 'Brute Force', 'bruteforce') THEN 1 ELSE 0 END) as suspicious
             FROM packets 
             WHERE timestamp > datetime('now', '-{hours} hours')
             GROUP BY hour
@@ -73,12 +76,20 @@ def get_traffic_trends():
         # Format data
         data = []
         for row in results:
-            hour_str = row[0].split(' ')[1] if row[0] else '00:00'
+            hour_str = row[0].split(' ')[1] + ":00" if row[0] else '00:00'
+            dos_count = row[2] or 0
+            port_scan_count = row[3] or 0
+            brute_force_count = row[4] or 0
+            suspicious_count = row[5] or 0
+            
             data.append({
                 'time': hour_str,
                 'packets': row[1] or 0,
-                'threats': row[2] or 0,
-                'safe': (row[1] or 0) - (row[2] or 0)
+                'threats': dos_count + port_scan_count + brute_force_count + suspicious_count,
+                'dos': dos_count,
+                'portScan': port_scan_count,
+                'bruteForce': brute_force_count,
+                'suspicious': suspicious_count
             })
         
         return jsonify(data if data else []), 200
@@ -89,7 +100,7 @@ def get_traffic_trends():
 
 @analytics_bp.route('/threat-heatmap', methods=['GET'])
 def get_threat_heatmap():
-    """Get threat heatmap showing attack sources over time"""
+    """Get top threat sources for bar chart"""
     try:
         conn = sqlite3.connect(DATABASE)
         cursor = conn.cursor()
@@ -104,32 +115,15 @@ def get_threat_heatmap():
             LIMIT 10
         ''')
         
-        top_ips = [row[0] for row in cursor.fetchall()]
-        
-        # Get hourly attack counts for each top IP
-        data = []
-        for i in range(24):
-            hour_ago = datetime.utcnow() - timedelta(hours=i)
-            hour_str = hour_ago.strftime('%H')
-            
-            for ip in top_ips:
-                cursor.execute('''
-                    SELECT COUNT(*) 
-                    FROM detection_events
-                    WHERE src_ip = ? 
-                    AND strftime('%H', timestamp) = ?
-                ''', (ip, hour_str))
-                
-                count = cursor.fetchone()[0]
-                if count > 0:
-                    data.append({
-                        'time': int(hour_str),
-                        'ip': ip,
-                        'threats': count
-                    })
-        
+        results = cursor.fetchall()
         conn.close()
-        return jsonify(data if data else []), 200
+        
+        data = [
+            {'ip': row[0], 'threats': row[1]}
+            for row in results
+        ]
+        
+        return jsonify(data), 200
     
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -172,16 +166,15 @@ def get_detection_stats():
         
         conn.close()
         
-        return jsonify({
-            'totalPackets': total,
-            'attacksDetected': attacks,
-            'safePackets': safe,
-            'mlDetections': ml_detections,
-            'ruleDetections': rule_detections,
-            'accuracy': accuracy,
-            'precision': precision,
-            'detectionRate': round(attacks / max(1, total) * 100, 2)
-        }), 200
+        # Format for frontend pie chart
+        data = [
+            {'category': 'True Positive', 'value': attacks, 'color': '#00ff88'},
+            {'category': 'Safe Traffic', 'value': safe, 'color': '#00d9ff'},
+            {'category': 'ML Detections', 'value': ml_detections, 'color': '#b536d9'},
+            {'category': 'Rule Detections', 'value': rule_detections, 'color': '#ffb003'}
+        ]
+        
+        return jsonify(data), 200
     
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -219,6 +212,36 @@ def get_severity_breakdown():
         ]
         
         return jsonify(data if data else []), 200
+    
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@analytics_bp.route('/confidence-distribution', methods=['GET'])
+def get_confidence_distribution():
+    """Get ML confidence distribution from real detection events"""
+    try:
+        conn = sqlite3.connect(DATABASE)
+        cursor = conn.cursor()
+        
+        # Get confidence values
+        cursor.execute('SELECT ml_confidence FROM packets')
+        results = cursor.fetchall()
+        conn.close()
+        
+        # Group into 10% bins
+        bins = [0] * 10
+        for row in results:
+            conf = row[0] or 0
+            bin_idx = min(int(conf * 10), 9)
+            bins[bin_idx] += 1
+            
+        data = [
+            {'range': f'{i*10}-{(i+1)*10}%', 'count': count}
+            for i, count in enumerate(bins)
+        ]
+        
+        return jsonify(data), 200
     
     except Exception as e:
         return jsonify({'error': str(e)}), 500
